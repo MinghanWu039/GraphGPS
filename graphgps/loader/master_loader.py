@@ -18,6 +18,8 @@ from graphgps.loader.dataset.aqsol_molecules import AQSOL
 from graphgps.loader.dataset.coco_superpixels import COCOSuperpixels
 from graphgps.loader.dataset.malnet_tiny import MalNetTiny
 from graphgps.loader.dataset.voc_superpixels import VOCSuperpixels
+from graphgps.loader.dataset.graphml_dataset import GraphMLDataset
+from graphgps.loader.dataset.simple_graphml import SimpleGraphMLDataset
 from graphgps.loader.split_generator import (prepare_splits,
                                              set_dataset_splits)
 from graphgps.transform.posenc_stats import compute_posenc_stats
@@ -140,6 +142,12 @@ def load_dataset_master(format, name, dataset_dir):
         elif pyg_dataset_id == 'COCOSuperpixels':
             dataset = preformat_COCOSuperpixels(dataset_dir, name,
                                                 cfg.dataset.slic_compactness)
+
+        elif pyg_dataset_id == 'GraphML':
+            dataset = preformat_GraphML(dataset_dir, name)
+            
+        elif pyg_dataset_id == 'SimpleGraphML':
+            dataset = preformat_SimpleGraphML(dataset_dir, name)
 
         else:
             raise ValueError(f"Unexpected PyG Dataset identifier: {format}")
@@ -610,6 +618,94 @@ def preformat_COCOSuperpixels(dataset_dir, name, slic_compactness):
                          split=split)
          for split in ['train', 'val', 'test']]
     )
+    return dataset
+
+
+def preformat_GraphML(dataset_dir, name):
+    """Load and preformat GraphML datasets.
+
+    Args:
+        dataset_dir: path where to store the cached dataset
+        name: configuration name for the GraphML dataset
+
+    Returns:
+        PyG dataset object
+    """
+    # The GraphML directory should be specified in the config
+    graphml_dir = cfg.dataset.get('graphml_dir', None)
+    if graphml_dir is None:
+        raise ValueError("GraphML directory must be specified in cfg.dataset.graphml_dir")
+    
+    # Extract configuration parameters
+    label_map = cfg.dataset.get('label_map', {})
+    node_features = cfg.dataset.get('node_features', [])
+    edge_features = cfg.dataset.get('edge_features', [])
+    task_type = cfg.dataset.get('task_type', 'classification')
+    train_ratio = cfg.dataset.get('train_ratio', 0.7)
+    val_ratio = cfg.dataset.get('val_ratio', 0.15)
+    test_ratio = cfg.dataset.get('test_ratio', 0.15)
+    random_seed = cfg.dataset.get('split_seed', 42)
+    
+    dataset = GraphMLDataset(
+        root=dataset_dir,
+        graphml_dir=graphml_dir,
+        label_map=label_map,
+        node_features=node_features,
+        edge_features=edge_features,
+        task_type=task_type,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        random_seed=random_seed
+    )
+    
+    # Set split indices
+    split_dict = dataset.get_idx_split()
+    dataset.split_idxs = [split_dict['train'], split_dict['valid'], split_dict['test']]
+    
+    return dataset
+
+
+def preformat_SimpleGraphML(dataset_dir, name):
+    """Load and preformat simple GraphML datasets (no node features).
+
+    Args:
+        dataset_dir: path where to store the cached dataset
+        name: configuration name for the GraphML dataset
+
+    Returns:
+        PyG dataset object
+    """
+    # The GraphML directory should be specified in the config
+    graphml_dir = cfg.dataset.get('graphml_dir', None)
+    if graphml_dir is None:
+        raise ValueError("GraphML directory must be specified in cfg.dataset.graphml_dir")
+    
+    # Extract configuration parameters
+    label_map = cfg.dataset.get('label_map', {})
+    auto_cycle_detection = cfg.dataset.get('auto_cycle_detection', True)
+    test_files = cfg.dataset.get('test_files', [])
+    test_dir = cfg.dataset.get('test_dir', None)
+    train_ratio = cfg.dataset.get('train_ratio', 0.8)
+    val_ratio = cfg.dataset.get('val_ratio', 0.2)
+    random_seed = cfg.dataset.get('split_seed', 42)
+    
+    dataset = SimpleGraphMLDataset(
+        root=dataset_dir,
+        graphml_dir=graphml_dir,
+        label_map=label_map,
+        auto_cycle_detection=auto_cycle_detection,
+        test_files=test_files,
+        test_dir=test_dir,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        random_seed=random_seed
+    )
+    
+    # Set split indices
+    split_dict = dataset.get_idx_split()
+    dataset.split_idxs = [split_dict['train'], split_dict['valid'], split_dict['test']]
+    
     return dataset
 
 
