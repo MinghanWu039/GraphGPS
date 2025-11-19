@@ -51,6 +51,9 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
 def eval_epoch(logger, loader, model, split='val'):
     model.eval()
     time_start = time.time()
+    # Collect prediction/true arrays for optional confusion-matrix logging
+    all_true = []
+    all_pred = []
     for batch in loader:
         batch.split = split
         batch.to(torch.device(cfg.accelerator))
@@ -67,6 +70,25 @@ def eval_epoch(logger, loader, model, split='val'):
             loss, pred_score = compute_loss(pred, true)
             _true = true.detach().to('cpu', non_blocking=True)
             _pred = pred_score.detach().to('cpu', non_blocking=True)
+        # Convert predictions to label indices for confusion matrix.
+        try:
+            if _pred.dim() > 1:
+                pred_labels = _pred.argmax(dim=1).to('cpu').numpy()
+            else:
+                pred_labels = (_pred.squeeze() > 0.5).to('cpu').numpy().astype(int)
+        except Exception:
+            # Fallback: convert via numpy
+            _p = _pred.numpy()
+            if getattr(_p, 'ndim', 1) > 1:
+                pred_labels = _p.argmax(axis=1)
+            else:
+                pred_labels = (_p.squeeze() > 0.5).astype(int)
+        try:
+            true_labels = _true.squeeze().to('cpu').numpy()
+        except Exception:
+            true_labels = _true.numpy()
+        all_true.append(true_labels)
+        all_pred.append(pred_labels)
         logger.update_stats(true=_true,
                             pred=_pred,
                             loss=loss.detach().cpu().item(),
@@ -75,6 +97,14 @@ def eval_epoch(logger, loader, model, split='val'):
                             dataset_name=cfg.dataset.name,
                             **extra_stats)
         time_start = time.time()
+    # concatenate arrays
+    if len(all_true) > 0:
+        all_true = np.concatenate([np.array(x).reshape(-1) for x in all_true])
+        all_pred = np.concatenate([np.array(x).reshape(-1) for x in all_pred])
+    else:
+        all_true = np.array([])
+        all_pred = np.array([])
+    return all_true, all_pred
 
 
 @register_train('custom')
@@ -111,6 +141,13 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
         run = wandb.init(entity=cfg.wandb.entity, project=cfg.wandb.project,
                          name=wandb_name)
         run.config.update(cfg_to_dict(cfg))
+        # Log model size (trainable parameters)
+        try:
+            num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            run.summary['num_params'] = int(num_params)
+            run.log({'num_params': int(num_params)})
+        except Exception:
+            pass
 
     num_splits = len(loggers)
     split_names = ['val', 'test']
@@ -124,9 +161,58 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
 
         if is_eval_epoch(cur_epoch):
             for i in range(1, num_splits):
-                eval_epoch(loggers[i], loaders[i], model,
-                           split=split_names[i - 1])
+                # Run evaluation and collect predictions for confusion matrix
+                all_true, all_pred = eval_epoch(loggers[i], loaders[i], model,
+                                                 split=split_names[i - 1])
                 perf[i].append(loggers[i].write_epoch(cur_epoch))
+                # Log per-epoch timing and efficiency metrics to wandb
+                if cfg.wandb.use:
+                    epoch_time = full_epoch_times[-1] if len(full_epoch_times) > 0 else (time.perf_counter() - start_time)
+                    # Log time per epoch
+                    try:
+                        run.log({'time_per_epoch': float(epoch_time)}, step=cur_epoch)
+                    except Exception:
+                        pass
+                    # Compute accuracy for this eval split if available
+                    try:
+                        # prefer configured metric if available
+                        m = cfg.metric_best if cfg.metric_best != 'auto' else 'accuracy'
+                        if m in perf[i][-1]:
+                            cur_acc = float(perf[i][-1][m])
+                        else:
+                            cur_acc = float((all_true == all_pred).mean()) if all_true.size else 0.0
+                        prev_acc = None
+                        if len(perf[i]) > 1:
+                            if m in perf[i][-2]:
+                                prev_acc = float(perf[i][-2][m])
+                        time_per_1pct = None
+                        if prev_acc is not None:
+                            delta = cur_acc - prev_acc
+                            if delta > 0:
+                                time_per_1pct = float(epoch_time) / (delta * 100.0)
+                        run.log({'val_accuracy': cur_acc, 'time_per_1pct_sec': time_per_1pct}, step=cur_epoch)
+                    except Exception:
+                        pass
+                    # Log confusion matrix (use wandb helper if available)
+                    try:
+                        if all_true.size and all_pred.size:
+                            # Try wandb.plot.confusion_matrix first
+                            try:
+                                labels = list(map(str, np.unique(np.concatenate([all_true, all_pred]))))
+                                cm = wandb.plot.confusion_matrix(preds=all_pred.tolist(),
+                                                                 y_true=all_true.tolist(),
+                                                                 class_names=labels)
+                                run.log({f"confusion_matrix/{split_names[i-1]}": cm}, step=cur_epoch)
+                            except Exception:
+                                # Fallback: compute numpy confusion matrix and log as list
+                                uniq = np.unique(np.concatenate([all_true, all_pred]))
+                                label_to_idx = {l: idx for idx, l in enumerate(uniq)}
+                                cm_np = np.zeros((len(uniq), len(uniq)), dtype=int)
+                                for t, p in zip(all_true, all_pred):
+                                    cm_np[label_to_idx[t], label_to_idx[p]] += 1
+                                run.log({f"confusion_matrix/{split_names[i-1]}": cm_np.tolist()}, step=cur_epoch)
+                    except Exception:
+                        pass
         else:
             for i in range(1, num_splits):
                 perf[i].append(perf[i][-1])
