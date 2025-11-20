@@ -636,12 +636,18 @@ def preformat_SimpleGraphML(dataset_dir, name):
         raise e
 
     # Extract configuration parameters
+    graph_dir = cfg.data_src.graphml_dir
+    label_dir = cfg.data_src.label_dir
+    if not graph_dir or not label_dir:
+        raise ValueError("`cfg.data_src.graphml_dir` and "
+                         "`cfg.data_src.label_dir` must be provided.")
+
     dataset = SimpleGraphMLDataset(
         root=dataset_dir,
-        train_ratio=0.8,
-        random_seed=42,
-        graph_dir='/home/miw039/private/dsc180/graph_token_outputs/graphs/',
-        label_dir='/home/miw039/private/dsc180/graph_token_outputs/cycle_check_labels/'
+        graph_dir=graph_dir,
+        label_dir=label_dir,
+        train_ratio=cfg.data_src.train_ratio,
+        random_seed=cfg.data_src.random_seed,
     )
     
     # Set split indices
