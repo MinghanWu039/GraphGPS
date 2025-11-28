@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch_geometric.graphgym.checkpoint import load_ckpt, save_ckpt, clean_ckpt
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.loss import compute_loss
@@ -11,6 +12,43 @@ from torch_geometric.graphgym.utils.epoch import is_eval_epoch, is_ckpt_epoch
 
 from graphgps.loss.subtoken_prediction_loss import subtoken_cross_entropy
 from graphgps.utils import cfg_to_dict, flatten_dict, make_wandb_name
+
+def compute_batch_loss(pred, true, batch):
+    """
+    Wrapper around GraphGym's default `compute_loss` that additionally supports
+    node-level supervision when predictions and targets align per node. If the
+    leading dimensions do not match, the original behavior is preserved.
+    """
+    num_nodes = getattr(batch, 'num_nodes', None)
+    true_flat = true.view(-1)
+    if num_nodes is not None and pred.size(0) == int(num_nodes):
+        valid_mask = true_flat >= 0
+        if not torch.any(valid_mask):
+            return pred.new_zeros(()), pred
+
+        filtered_pred = pred[valid_mask]
+        filtered_true = true_flat[valid_mask].long()
+        node_loss = F.cross_entropy(filtered_pred, filtered_true)
+        return node_loss, pred
+    return compute_loss(pred, true)
+
+
+def compute_classification_mae_metric(pred_scores: torch.Tensor, true_labels: torch.Tensor) -> float:
+    """
+    Compute mean absolute error between predicted class indices and true labels.
+    When either prediction or target is marked -1 (no path), assign an error of 20.
+    """
+    true_flat = true_labels.view(-1).long()
+    if pred_scores.dim() > 1:
+        pred_classes = pred_scores.view(-1, pred_scores.size(-1)).argmax(dim=1)
+    else:
+        pred_classes = (pred_scores.view(-1) > 0.5).long()
+
+    pred_classes = pred_classes.long()
+    invalid = (true_flat < 0) | (pred_classes < 0)
+    abs_err = (pred_classes - true_flat).abs().float()
+    abs_err[invalid] = 20.0
+    return abs_err.mean().item()
 
 
 def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation):
@@ -21,14 +59,25 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
         batch.split = 'train'
         batch.to(torch.device(cfg.accelerator))
         pred, true = model(batch)
+        extra_metrics = {}
         if cfg.dataset.name == 'ogbg-code2':
             loss, pred_score = subtoken_cross_entropy(pred, true)
             _true = true
             _pred = pred_score
         else:
-            loss, pred_score = compute_loss(pred, true)
-            _true = true.detach().to('cpu', non_blocking=True)
-            _pred = pred_score.detach().to('cpu', non_blocking=True)
+            loss, pred_score = compute_batch_loss(pred, true, batch)
+            true_cpu_full = true.detach().to('cpu', non_blocking=True)
+            pred_cpu_full = pred_score.detach().to('cpu', non_blocking=True)
+            if cfg.dataset.name == 'shortest_paths':
+                extra_metrics['mae'] = compute_classification_mae_metric(pred_cpu_full, true_cpu_full)
+            _true = true_cpu_full
+            _pred = pred_cpu_full
+            valid = _true.view(-1) >= 0
+            _true = _true.view(-1)[valid]
+            if _pred.dim() == 2:
+                _pred = _pred.view(-1, _pred.size(-1))[valid]
+            else:
+                _pred = _pred.view(-1)[valid]
         loss.backward()
         # Parameters update after accumulating gradients for given num. batches.
         if ((iter + 1) % batch_accumulation == 0) or (iter + 1 == len(loader)):
@@ -43,7 +92,8 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
                             lr=scheduler.get_last_lr()[0],
                             time_used=time.time() - time_start,
                             params=cfg.params,
-                            dataset_name=cfg.dataset.name)
+                            dataset_name=cfg.dataset.name,
+                            **extra_metrics)
         time_start = time.time()
 
 
@@ -62,14 +112,25 @@ def eval_epoch(logger, loader, model, split='val'):
         else:
             pred, true = model(batch)
             extra_stats = {}
+        metrics_payload = {}
         if cfg.dataset.name == 'ogbg-code2':
             loss, pred_score = subtoken_cross_entropy(pred, true)
             _true = true
             _pred = pred_score
         else:
-            loss, pred_score = compute_loss(pred, true)
-            _true = true.detach().to('cpu', non_blocking=True)
-            _pred = pred_score.detach().to('cpu', non_blocking=True)
+            loss, pred_score = compute_batch_loss(pred, true, batch)
+            true_cpu_full = true.detach().to('cpu', non_blocking=True)
+            pred_cpu_full = pred_score.detach().to('cpu', non_blocking=True)
+            if cfg.dataset.name == 'shortest_paths':
+                metrics_payload['mae'] = compute_classification_mae_metric(pred_cpu_full, true_cpu_full)
+            _true = true_cpu_full
+            _pred = pred_cpu_full
+            valid = _true.view(-1) >= 0
+            _true = _true.view(-1)[valid]
+            if _pred.dim() == 2:
+                _pred = _pred.view(-1, _pred.size(-1))[valid]
+            else:
+                _pred = _pred.view(-1)[valid]
         # Convert predictions to label indices for confusion matrix.
         try:
             if _pred.dim() > 1:
@@ -95,7 +156,8 @@ def eval_epoch(logger, loader, model, split='val'):
                             lr=0, time_used=time.time() - time_start,
                             params=cfg.params,
                             dataset_name=cfg.dataset.name,
-                            **extra_stats)
+                            **extra_stats,
+                            **metrics_payload)
         time_start = time.time()
     # concatenate arrays
     if len(all_true) > 0:

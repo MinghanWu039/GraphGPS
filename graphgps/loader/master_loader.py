@@ -145,6 +145,9 @@ def load_dataset_master(format, name, dataset_dir):
         elif pyg_dataset_id == 'SimpleGraphML':
             dataset = preformat_SimpleGraphML(dataset_dir, name)
 
+        elif pyg_dataset_id == 'ShortestPath':
+            dataset = preformat_SimpleGraphML(dataset_dir, name, shortest_path=True)
+
         else:
             raise ValueError(f"Unexpected PyG Dataset identifier: {format}")
 
@@ -205,7 +208,8 @@ def load_dataset_master(format, name, dataset_dir):
         logging.info(f"Precomputing Positional Encoding statistics: "
                      f"{pe_enabled_list} for all graphs...")
         # Estimate directedness based on 10 graphs to save time.
-        is_undirected = all(d.is_undirected() for d in dataset[:10])
+        # is_undirected = all(d.is_undirected() for d in dataset[:10])
+        is_undirected = all(dataset[i].is_undirected() for i in range(min(10, len(dataset))))
         logging.info(f"  ...estimated to be undirected: {is_undirected}")
         pre_transform_in_memory(dataset,
                                 partial(compute_posenc_stats,
@@ -616,7 +620,7 @@ def preformat_COCOSuperpixels(dataset_dir, name, slic_compactness):
     )
     return dataset
 
-def preformat_SimpleGraphML(dataset_dir, name):
+def preformat_SimpleGraphML(dataset_dir, name, shortest_path=False):
     """Load and preformat simple GraphML datasets (no node features).
 
     Args:
@@ -628,12 +632,6 @@ def preformat_SimpleGraphML(dataset_dir, name):
     """
     # Use the parent directory of the provided dataset_dir
     dataset_dir = osp.abspath(osp.dirname(dataset_dir))
-    try:
-        from graphgps.loader.dataset.simple_graphml import SimpleGraphMLDataset
-    except Exception as e:
-        logging.error('ERROR: Failed to import SimpleGraphMLDataset class, '
-                      'make sure the module is available.')
-        raise e
 
     # Extract configuration parameters
     graph_dir = cfg.data_src.graphml_dir
@@ -642,13 +640,34 @@ def preformat_SimpleGraphML(dataset_dir, name):
         raise ValueError("`cfg.data_src.graphml_dir` and "
                          "`cfg.data_src.label_dir` must be provided.")
 
-    dataset = SimpleGraphMLDataset(
-        root=dataset_dir,
-        graph_dir=graph_dir,
-        label_dir=label_dir,
-        train_ratio=cfg.data_src.train_ratio,
-        random_seed=cfg.data_src.random_seed,
-    )
+    if shortest_path:
+        try:
+            from graphgps.loader.dataset.shortest_paths_graphml import ShortestPathsGraphMLDataset
+        except Exception as e:
+            logging.error('ERROR: Failed to import ShortestPathDataset class, '
+                        'make sure the module is available.')
+            raise e
+        dataset = ShortestPathsGraphMLDataset(
+            root=dataset_dir,
+            graph_dir=graph_dir,
+            label_dir=label_dir,
+            train_ratio=cfg.data_src.train_ratio,
+            random_seed=cfg.data_src.random_seed,
+        )
+    else:
+        try:
+            from graphgps.loader.dataset.simple_graphml import SimpleGraphMLDataset
+        except Exception as e:
+            logging.error('ERROR: Failed to import SimpleGraphMLDataset class, '
+                        'make sure the module is available.')
+            raise e
+        dataset = SimpleGraphMLDataset(
+            root=dataset_dir,
+            graph_dir=graph_dir,
+            label_dir=label_dir,
+            train_ratio=cfg.data_src.train_ratio,
+            random_seed=cfg.data_src.random_seed,
+        )
     
     # Set split indices
     split_dict = dataset.get_idx_split()

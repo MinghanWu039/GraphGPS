@@ -1,0 +1,72 @@
+out_dir: results
+metric_best: accuracy
+wandb:
+  use: True
+  project: Shortest_Paths
+  entity: miw039-uc-san-diego
+dataset:
+  dir: /home/miw039/private/dsc180/GraphGPS/datasets
+  format: PyG-ShortestPath  
+  name: shortest_paths
+  task: graph
+  task_type: classification
+  transductive: False
+  node_encoder: True
+  node_encoder_name: LapPE
+  node_encoder_bn: False
+  edge_encoder: True  # No edge features
+  edge_encoder_name: DummyEdge
+  edge_encoder_bn: False
+data_src:
+  graphml_dir: /home/miw039/private/dsc180/graph_token_outputs/shortest_path_graphs/
+  label_dir: /home/miw039/private/dsc180/graph_token_outputs/shortest_path_labels/
+posenc_LapPE:
+  enable: True
+  eigen:
+    laplacian_norm: none
+    eigvec_norm: L2
+    max_freqs: 10
+  model: DeepSet
+  dim_pe: 8
+  layers: 2
+  raw_norm_type: none
+train:
+  mode: custom
+  batch_size: 32
+  eval_period: 1
+  ckpt_period: 50
+model:
+  type: GPSModel
+  loss_fun: cross_entropy  # Binary classification for cycle/no-cycle
+  edge_decoding: dot
+  graph_pooling: mean
+gt:
+  layer_type: CustomGatedGCN+Transformer
+  layers: 3
+  n_heads: 1
+  dim_hidden: 32
+  dropout: 0.0
+  attn_dropout: 0.0
+  layer_norm: True
+  batch_norm: False
+gnn:
+  head: node
+  layers_pre_mp: 1
+  layers_post_mp: 1
+  dim_inner: 32  # Must match gt.dim_hidden
+  batchnorm: False
+  act: relu
+  dropout: 0.0
+  agg: mean
+  normalize_adj: False
+optim:
+  clip_grad_norm: True
+  optimizer: adamW
+  weight_decay: 1e-5
+  base_lr: 0.001
+  max_epoch: 50
+  scheduler: reduce_on_plateau
+  num_warmup_epochs: 10
+  reduce_factor: 0.5
+  schedule_patience: 5
+  min_lr: 1e-6

@@ -69,6 +69,7 @@ class SimpleGraphMLDataset(InMemoryDataset):
         # Ensure train/test ratios sum to 1 (val is handled separately)
         assert 0.0 < train_ratio < 1.0, "train_ratio must be less than 1.0 and greater than 0.0"
         
+        root = os.path.join(root, "cycle-check")
         super().__init__(root)
         # Load processed dataset. If processed files were created by an
         # earlier run that didn't include node features, `data.x` can be
