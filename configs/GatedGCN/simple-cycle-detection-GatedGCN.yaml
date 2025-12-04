@@ -3,7 +3,7 @@ metric_best: accuracy
 num_workers: 4
 wandb:
   use: True
-  project: Cycle_Detection_GatedGCN
+  project: Cycle_Detection
   entity: miw039-uc-san-diego
 dataset:
   format: PyG-SimpleGraphML  # Use the simple GraphML loader
